@@ -11,6 +11,14 @@ endif()
 
 option(RESMON_BUILD_TESTS "Build resmon unit/integration tests" ON)
 
+add_library(resmon_core
+  src/config.cpp
+)
+target_include_directories(resmon_core PUBLIC include)
+
+add_executable(resmon src/main.cpp)
+target_link_libraries(resmon PRIVATE resmon_core)
+
 if(RESMON_BUILD_TESTS)
   enable_testing()
   include(FetchContent)
