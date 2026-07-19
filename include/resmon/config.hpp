@@ -31,6 +31,11 @@ struct Config {
   std::string mqtt_host;
   int mqtt_port = -1;  // -1 sentinel: not explicitly set, resolved from scheme
   std::string ca_cert;
+  // Skips verifying the broker cert's hostname/SAN against mqtt_host (still
+  // validates the cert chains to ca_cert). Needed when connecting by IP or
+  // to a cert issued for a different name -- mirrors mosquitto_pub/sub's
+  // --insecure flag.
+  bool tls_insecure = false;
   std::string username;
   std::string password;
   std::string client_id;

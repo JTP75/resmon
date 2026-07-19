@@ -70,6 +70,7 @@ int main(int argc, char** argv) {
   mqtt_cfg.password = cfg.password;
   mqtt_cfg.tls_enabled = cfg.tlsEnabled();
   mqtt_cfg.ca_cert_path = cfg.ca_cert;
+  mqtt_cfg.tls_insecure = cfg.tls_insecure;
   mqtt_cfg.will_topic = cfg.statusTopic();
   mqtt_cfg.will_payload = std::string(c::kStatusOffline);
   mqtt_cfg.keepalive_seconds = c::kMqttKeepaliveSeconds;

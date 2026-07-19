@@ -33,6 +33,8 @@ inline constexpr std::string_view kStatusOffline = "offline";
 inline constexpr std::string_view kClientIdPrefix = "resmon-";
 inline constexpr int kMqttKeepaliveSeconds = 30;
 inline constexpr int kMqttConnectTimeoutSeconds = 10;
+// Values of RESMON_MQTT_TLS_INSECURE (case-insensitive) treated as "true".
+inline constexpr std::string_view kTruthyEnvValues[] = {"1", "true", "yes", "on"};
 
 // --- Sampling ---
 inline constexpr int kDefaultIntervalSeconds = 10;
@@ -81,5 +83,6 @@ inline constexpr std::string_view kEnvHostname = "RESMON_HOSTNAME";
 inline constexpr std::string_view kEnvInterval = "RESMON_INTERVAL";
 inline constexpr std::string_view kEnvSysfsRoot = "RESMON_SYSFS_ROOT";
 inline constexpr std::string_view kEnvProcRoot = "RESMON_PROC_ROOT";
+inline constexpr std::string_view kEnvTlsInsecure = "RESMON_MQTT_TLS_INSECURE";
 
 }  // namespace resmon::constants

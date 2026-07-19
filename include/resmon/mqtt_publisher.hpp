@@ -21,6 +21,11 @@ struct MqttConnectConfig {
   std::string password;
   bool tls_enabled = false;
   std::string ca_cert_path;  // required if tls_enabled
+  // Skips verifying the broker cert's hostname/SAN against `host` (chain
+  // validation against ca_cert_path still applies). Mirrors mosquitto_pub/
+  // sub's --insecure; needed when connecting by IP or to a cert issued for
+  // a different name.
+  bool tls_insecure = false;
   std::string will_topic;
   std::string will_payload;
   int keepalive_seconds = 30;

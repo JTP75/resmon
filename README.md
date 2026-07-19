@@ -50,6 +50,7 @@ flag/env-var/default mapping. Key settings:
 | `--mqtt-host` | `RESMON_MQTT_HOST` | `localhost` | |
 | `--mqtt-port` | `RESMON_MQTT_PORT` | 1883 (mqtt) / 8883 (mqtts) | |
 | `--ca-cert` | `RESMON_CA_CERT` | (none) | required when scheme is `mqtts` |
+| `--tls-insecure` | `RESMON_MQTT_TLS_INSECURE` | `false` | skip broker cert hostname/SAN check (chain validation against `--ca-cert` still applies); needed when connecting by IP or to a cert issued for a different name -- same as `mosquitto_pub`/`sub`'s `--insecure` |
 | `--username` / `--password` | `RESMON_MQTT_USERNAME` / `RESMON_MQTT_PASSWORD` | (none) | optional, in addition to TLS |
 | `--interval` | `RESMON_INTERVAL` | `10` | seconds |
 | `--topic-prefix` | `RESMON_TOPIC_PREFIX` | `resmon` | |

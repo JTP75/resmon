@@ -65,6 +65,16 @@ MosquittoPublisher::MosquittoPublisher(MqttConnectConfig cfg) : cfg_(std::move(c
       mosq_ = nullptr;
       throw std::runtime_error(std::string("mosquitto_tls_set failed: ") + mosquitto_strerror(rc));
     }
+
+    if (cfg_.tls_insecure) {
+      rc = mosquitto_tls_insecure_set(mosq_, true);
+      if (rc != MOSQ_ERR_SUCCESS) {
+        mosquitto_destroy(mosq_);
+        mosq_ = nullptr;
+        throw std::runtime_error(std::string("mosquitto_tls_insecure_set failed: ") +
+                                  mosquitto_strerror(rc));
+      }
+    }
   }
 
   mosquitto_reconnect_delay_set(mosq_, 2, 30, true /* exponential backoff */);

@@ -23,6 +23,30 @@ TEST(MqttPublisherConstruct, TlsWithMissingCaCertThrows) {
   EXPECT_THROW({ MosquittoPublisher pub(cfg); }, std::runtime_error);
 }
 
+TEST(MqttPublisherConstruct, TlsInsecureWithReadableCaCertConstructsWithoutThrowing) {
+  // mosquitto_tls_set only checks that the file is readable, not that it's
+  // a valid PEM -- any existing file works here without needing a real cert.
+  MqttConnectConfig cfg;
+  cfg.host = "localhost";
+  cfg.client_id = "resmon-test-tls-insecure";
+  cfg.tls_enabled = true;
+  cfg.tls_insecure = true;
+  cfg.ca_cert_path = "/etc/hostname";
+  EXPECT_NO_THROW({ MosquittoPublisher pub(cfg); });
+}
+
+TEST(MqttPublisherConstruct, TlsInsecureStillRequiresReadableCaCert) {
+  // tls_insecure only skips hostname/SAN verification -- chain validation
+  // against ca_cert_path still applies, so a missing file still throws.
+  MqttConnectConfig cfg;
+  cfg.host = "localhost";
+  cfg.client_id = "resmon-test-tls-insecure-missing-ca";
+  cfg.tls_enabled = true;
+  cfg.tls_insecure = true;
+  cfg.ca_cert_path = "/nonexistent/path/ca.pem";
+  EXPECT_THROW({ MosquittoPublisher pub(cfg); }, std::runtime_error);
+}
+
 TEST(MqttPublisherConnect, TimesOutWhenBrokerUnreachable) {
   MqttConnectConfig cfg;
   cfg.host = "127.0.0.1";

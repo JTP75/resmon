@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -32,6 +33,16 @@ std::string resolveStr(const std::optional<std::string>& cli_value,
   if (cli_value.has_value()) return *cli_value;
   if (auto v = env(env_name)) return *v;
   return std::string(default_value);
+}
+
+bool isTruthy(const std::string& text) {
+  std::string lower;
+  lower.reserve(text.size());
+  for (char ch : text) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  for (auto truthy : c::kTruthyEnvValues) {
+    if (lower == truthy) return true;
+  }
+  return false;
 }
 
 int parseIntOrThrow(std::string_view name, const std::string& text) {
@@ -77,6 +88,10 @@ std::string usageText() {
      << "  --mqtt-host HOST       broker host (default: " << c::kDefaultMqttHost << ")\n"
      << "  --mqtt-port PORT       broker port (default: 1883 plain / 8883 tls)\n"
      << "  --ca-cert PATH         CA cert file, required for mqtts\n"
+     << "  --tls-insecure         skip broker cert hostname/SAN verification (chain\n"
+     << "                         validation against --ca-cert still applies); needed\n"
+     << "                         when connecting by IP or to a cert issued for a\n"
+     << "                         different name. Also: " << c::kEnvTlsInsecure << "=1\n"
      << "  --username USER        optional broker username\n"
      << "  --password PASS        optional broker password (prefer " << c::kEnvPassword << " env var)\n"
      << "  --client-id ID         MQTT client id (default: derived from hostname)\n"
@@ -93,6 +108,7 @@ Config parseConfig(int argc, char** argv, const EnvLookup& env) {
   std::optional<std::string> cli_llama_url, cli_mqtt_scheme, cli_mqtt_host, cli_mqtt_port,
       cli_ca_cert, cli_username, cli_password, cli_client_id, cli_topic_prefix, cli_hostname,
       cli_interval, cli_sysfs_root, cli_proc_root;
+  bool cli_tls_insecure = false;
 
   enum LongOpt {
     kOptLlamaUrl = 1000,
@@ -100,6 +116,7 @@ Config parseConfig(int argc, char** argv, const EnvLookup& env) {
     kOptMqttHost,
     kOptMqttPort,
     kOptCaCert,
+    kOptTlsInsecure,
     kOptUsername,
     kOptPassword,
     kOptClientId,
@@ -117,6 +134,7 @@ Config parseConfig(int argc, char** argv, const EnvLookup& env) {
       {"mqtt-host", required_argument, nullptr, kOptMqttHost},
       {"mqtt-port", required_argument, nullptr, kOptMqttPort},
       {"ca-cert", required_argument, nullptr, kOptCaCert},
+      {"tls-insecure", no_argument, nullptr, kOptTlsInsecure},
       {"username", required_argument, nullptr, kOptUsername},
       {"password", required_argument, nullptr, kOptPassword},
       {"client-id", required_argument, nullptr, kOptClientId},
@@ -142,6 +160,7 @@ Config parseConfig(int argc, char** argv, const EnvLookup& env) {
       case kOptMqttHost: cli_mqtt_host = optarg; break;
       case kOptMqttPort: cli_mqtt_port = optarg; break;
       case kOptCaCert: cli_ca_cert = optarg; break;
+      case kOptTlsInsecure: cli_tls_insecure = true; break;
       case kOptUsername: cli_username = optarg; break;
       case kOptPassword: cli_password = optarg; break;
       case kOptClientId: cli_client_id = optarg; break;
@@ -163,6 +182,7 @@ Config parseConfig(int argc, char** argv, const EnvLookup& env) {
   cfg.mqtt_scheme = resolveStr(cli_mqtt_scheme, env, c::kEnvMqttScheme, c::kDefaultMqttScheme);
   cfg.mqtt_host = resolveStr(cli_mqtt_host, env, c::kEnvMqttHost, c::kDefaultMqttHost);
   cfg.ca_cert = resolveStr(cli_ca_cert, env, c::kEnvCaCert, "");
+  cfg.tls_insecure = cli_tls_insecure || isTruthy(resolveStr(std::nullopt, env, c::kEnvTlsInsecure, ""));
   cfg.username = resolveStr(cli_username, env, c::kEnvUsername, "");
   cfg.password = resolveStr(cli_password, env, c::kEnvPassword, "");
   cfg.topic_prefix = resolveStr(cli_topic_prefix, env, c::kEnvTopicPrefix, c::kDefaultTopicPrefix);

@@ -153,5 +153,33 @@ TEST(Config, CustomClientIdOverridesDerived) {
   EXPECT_EQ(cfg.client_id, "my-client");
 }
 
+TEST(Config, TlsInsecureDefaultsFalse) {
+  auto argv = makeArgv(baseArgs());
+  Config cfg = parseConfig(argv.argc(), argv.argv(), emptyEnv());
+  EXPECT_FALSE(cfg.tls_insecure);
+}
+
+TEST(Config, TlsInsecureFlagSetsTrue) {
+  auto args = baseArgs();
+  args.insert(args.end(), {"--tls-insecure"});
+  auto argv = makeArgv(args);
+  Config cfg = parseConfig(argv.argc(), argv.argv(), emptyEnv());
+  EXPECT_TRUE(cfg.tls_insecure);
+}
+
+TEST(Config, TlsInsecureFromEnvIsTruthy) {
+  auto argv = makeArgv(baseArgs());
+  auto env = fakeEnv({{"RESMON_MQTT_TLS_INSECURE", "true"}});
+  Config cfg = parseConfig(argv.argc(), argv.argv(), env);
+  EXPECT_TRUE(cfg.tls_insecure);
+}
+
+TEST(Config, TlsInsecureFromEnvRejectsNonTruthyValue) {
+  auto argv = makeArgv(baseArgs());
+  auto env = fakeEnv({{"RESMON_MQTT_TLS_INSECURE", "nope"}});
+  Config cfg = parseConfig(argv.argc(), argv.argv(), env);
+  EXPECT_FALSE(cfg.tls_insecure);
+}
+
 }  // namespace
 }  // namespace resmon
