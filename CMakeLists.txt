@@ -25,6 +25,7 @@ add_library(resmon_core
   src/command_runner.cpp
   src/proc_locator.cpp
   src/mqtt_publisher.cpp
+  src/sampler.cpp
   src/collectors/cpu_collector.cpp
   src/collectors/mem_collector.cpp
   src/collectors/gpu_collector.cpp
