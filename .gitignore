@@ -3,3 +3,4 @@ build/
 *.obj
 compile_commands.json
 .cache/
+.local/
