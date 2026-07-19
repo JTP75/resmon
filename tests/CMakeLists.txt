@@ -6,6 +6,7 @@ add_executable(resmon_tests
   unit/test_cpu_load.cpp
   unit/test_cpu_temp_parse.cpp
   unit/test_json_schema.cpp
+  unit/test_mqtt_publisher.cpp
 )
 target_include_directories(resmon_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/include
