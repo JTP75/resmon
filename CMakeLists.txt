@@ -11,10 +11,16 @@ endif()
 
 option(RESMON_BUILD_TESTS "Build resmon unit/integration tests" ON)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+
 add_library(resmon_core
   src/config.cpp
+  src/http_client.cpp
+  src/prometheus.cpp
 )
 target_include_directories(resmon_core PUBLIC include)
+target_link_libraries(resmon_core PUBLIC PkgConfig::CURL)
 
 add_executable(resmon src/main.cpp)
 target_link_libraries(resmon PRIVATE resmon_core)
