@@ -76,13 +76,15 @@ int main(int argc, char** argv) {
   mqtt_cfg.keepalive_seconds = c::kMqttKeepaliveSeconds;
   mqtt_cfg.connect_timeout_seconds = c::kMqttConnectTimeoutSeconds;
 
-  resmon::MosquittoPublisher publisher(mqtt_cfg);
+  std::unique_ptr<resmon::MosquittoPublisher> publisher_ptr;
   try {
-    publisher.connect();
+    publisher_ptr = std::make_unique<resmon::MosquittoPublisher>(mqtt_cfg);
+    publisher_ptr->connect();
   } catch (const std::exception& e) {
     std::cerr << "error: failed to connect to MQTT broker: " << e.what() << "\n";
     return 1;
   }
+  resmon::MosquittoPublisher& publisher = *publisher_ptr;
 
   publisher.publish(cfg.statusTopic(), std::string(c::kStatusOnline), true);
   std::cout << "resmon connected: " << mqtt_cfg.host << ":" << mqtt_cfg.port
