@@ -1,0 +1,16 @@
+[Unit]
+Description=resmon - llama-server & system monitor, publishes to MQTT
+After=network-online.target llama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pacel
+EnvironmentFile=/etc/resmon/resmon.env
+ExecStart=/home/pacel/resmon/build/resmon
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

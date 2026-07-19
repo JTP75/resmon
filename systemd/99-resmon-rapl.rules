@@ -1,0 +1,17 @@
+# Grants the "pacel" group read access to Intel RAPL energy counters
+# (/sys/class/powercap/intel-rapl:*) so resmon can read CPU package power
+# without running as root. The powercap subsystem has no /dev node, so
+# udev's OWNER/GROUP/MODE keys don't apply here -- this uses RUN+= to
+# chgrp/chmod the sysfs attribute files directly on each "add" event.
+#
+# Install:
+#   sudo cp systemd/99-resmon-rapl.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger -s powercap -c add
+#
+# The trigger re-fires "add" for already-present devices (intel_rapl is
+# usually loaded before udev rules are installed, so a plain reload alone
+# won't touch existing nodes). Persists across reboots without any
+# further action.
+
+SUBSYSTEM=="powercap", ACTION=="add", RUN+="/bin/chgrp -R pacel /sys%p", RUN+="/bin/chmod -R g+r /sys%p"
