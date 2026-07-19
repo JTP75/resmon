@@ -57,8 +57,15 @@ inline constexpr std::string_view kRaplNameFile = "name";
 // --- Memory ---
 inline constexpr std::string_view kMeminfoPath = "proc/meminfo";
 
-// --- GPU / NVML ---
-inline constexpr std::string_view kNvmlLibraryName = "libnvidia-ml.so.1";
+// --- GPU (via nvidia-smi subprocess; see gpu_collector for rationale) ---
+inline constexpr std::string_view kNvidiaSmiBinary = "nvidia-smi";
+inline constexpr std::string_view kNvidiaSmiGpuQueryFields =
+    "index,name,temperature.gpu,power.draw,power.limit,utilization.gpu,utilization.memory,"
+    "memory.used,memory.total,clocks.sm,fan.speed";
+inline constexpr std::string_view kNvidiaSmiComputeAppsQueryFields = "pid,used_memory";
+inline constexpr std::string_view kNvidiaSmiCsvFormat = "csv,noheader,nounits";
+inline constexpr std::string_view kNvidiaSmiNotAvailableMarkers[] = {"[N/A]", "[Not Supported]",
+                                                                      "N/A"};
 
 // --- Env var names (mirror CLI flags; CLI takes precedence) ---
 inline constexpr std::string_view kEnvLlamaUrl = "RESMON_LLAMA_URL";

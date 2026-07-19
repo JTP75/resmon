@@ -13,14 +13,22 @@ option(RESMON_BUILD_TESTS "Build resmon unit/integration tests" ON)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+find_package(nlohmann_json REQUIRED)
 
 add_library(resmon_core
   src/config.cpp
   src/http_client.cpp
   src/prometheus.cpp
+  src/fsutil.cpp
+  src/command_runner.cpp
+  src/proc_locator.cpp
+  src/collectors/cpu_collector.cpp
+  src/collectors/mem_collector.cpp
+  src/collectors/gpu_collector.cpp
+  src/collectors/llama_collector.cpp
 )
 target_include_directories(resmon_core PUBLIC include)
-target_link_libraries(resmon_core PUBLIC PkgConfig::CURL)
+target_link_libraries(resmon_core PUBLIC PkgConfig::CURL nlohmann_json::nlohmann_json)
 
 add_executable(resmon src/main.cpp)
 target_link_libraries(resmon PRIVATE resmon_core)
