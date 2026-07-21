@@ -106,3 +106,9 @@ You should see a retained `status` message (`online`), followed by a
 (`sudo systemctl stop resmon`) should publish a retained `offline` status
 before exiting; killing it uncleanly should still deliver `offline` via the
 broker's Last Will.
+
+## Subscriber client
+
+A lightweight Python CLI (`client/resq`) subscribes to the retained messages
+so you can query the latest snapshot from any device — no CMake build needed.
+See [`client/README.md`](client/README.md) for setup and subcommand reference.

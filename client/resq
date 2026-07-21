@@ -1,0 +1,721 @@
+#!/usr/bin/env python3
+"""resq: lightweight CLI for querying retained resmon MQTT snapshots.
+
+Shells out to mosquitto_sub to grab the latest retained state message. All
+connection plumbing (TLS, auth, host/port, topic prefix) lives in environment
+variables so AI agents and humans can query without remembering the MQTT
+plumbing.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_TOPIC_PREFIX = "resmon"
+DEFAULT_MQTT_PORT = 8883
+DEFAULT_TIMEOUT_SECONDS = 5
+HOSTS_TIMEOUT_SECONDS = 3
+STALE_SECONDS = 30
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+
+def resolve_path(data, path):
+    """Walk a dotted path through nested dicts and lists.
+
+    List indices are parsed as ints. Returns (value, True) on success or
+    (None, False) if any segment is missing or the path is empty.
+    """
+    if not path:
+        return None, False
+    parts = path.split(".")
+    cur = data
+    for part in parts:
+        if part == "":
+            return None, False
+        try:
+            cur = cur[int(part)]
+        except (ValueError, IndexError, TypeError):
+            if not isinstance(cur, dict) or part not in cur:
+                return None, False
+            cur = cur[part]
+    return cur, True
+
+
+def humanize_bytes(n):
+    """Convert bytes to a human-readable string (KiB / MiB / GiB / TiB)."""
+    for unit in ("KiB", "MiB", "GiB", "TiB"):
+        if abs(n) < 1024.0:
+            return f"{n:6.1f} {unit}"
+        n /= 1024.0
+    return f"{n:6.1f} PiB"
+
+
+def _run_mosquitto_sub(args, timeout):
+    """Run mosquitto_sub and return (stdout_text, None) or (None, error_str)."""
+    cmd = ["mosquitto_sub", "-C", "1", "-W", str(timeout)] + args
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 2,
+        )
+    except FileNotFoundError:
+        return None, "mosquitto_sub not found (install mosquitto-clients)"
+    except subprocess.TimeoutExpired:
+        return None, "timed out connecting to MQTT broker"
+    except OSError as e:
+        return None, f"failed to run mosquitto_sub: {e}"
+
+    if result.returncode == 2:
+        return None, "no messages received within timeout"
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        return None, stderr or f"mosquitto_sub exited with code {result.returncode}"
+
+    text = result.stdout.strip()
+    if not text:
+        return None, "received empty message"
+    try:
+        return text, None
+    except Exception as e:
+        return None, f"failed to decode message: {e}"
+
+
+def fetch_snapshot(target, topic_prefix=DEFAULT_TOPIC_PREFIX, timeout=DEFAULT_TIMEOUT_SECONDS):
+    """Fetch a single retained state snapshot from the broker."""
+    topic = f"{topic_prefix}/{target}/state"
+    args = ["-h", os.environ.get("RESMON_MQTT_HOST", ""), "-p",
+            str(os.environ.get("RESMON_MQTT_PORT", DEFAULT_MQTT_PORT)),
+            "-t", topic]
+
+    ca_cert = os.environ.get("RESMON_CA_CERT")
+    if ca_cert:
+        args += ["--cafile", ca_cert]
+
+    if os.environ.get("RESMON_MQTT_TLS_INSECURE", "").lower() in ("1", "true", "yes", "on"):
+        args.append("--insecure")
+
+    username = os.environ.get("RESMON_MQTT_USERNAME")
+    if username:
+        args += ["-u", username]
+        password = os.environ.get("RESMON_MQTT_PASSWORD", "")
+        if password:
+            args += ["-P", password]
+
+    text, err = _run_mosquitto_sub(args, timeout)
+    if err:
+        return None, err
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        return None, f"invalid JSON in response: {e}"
+
+    staleness = 0
+    if "ts" in data:
+        staleness = datetime.now(timezone.utc).timestamp() - int(data["ts"])
+    data["_staleness"] = staleness
+    return data, None
+
+
+def fetch_status_snapshots(timeout=HOSTS_TIMEOUT_SECONDS):
+    """Fetch all retained status messages to discover hosts and their state."""
+    topic = f"{DEFAULT_TOPIC_PREFIX}/+/status"
+    args = ["-h", os.environ.get("RESMON_MQTT_HOST", ""), "-p",
+            str(os.environ.get("RESMON_MQTT_PORT", DEFAULT_MQTT_PORT)),
+            "-v", "-t", topic]
+
+    ca_cert = os.environ.get("RESMON_CA_CERT")
+    if ca_cert:
+        args += ["--cafile", ca_cert]
+
+    if os.environ.get("RESMON_MQTT_TLS_INSECURE", "").lower() in ("1", "true", "yes", "on"):
+        args.append("--insecure")
+
+    username = os.environ.get("RESMON_MQTT_USERNAME")
+    if username:
+        args += ["-u", username]
+        password = os.environ.get("RESMON_MQTT_PASSWORD", "")
+        if password:
+            args += ["-P", password]
+
+    text, err = _run_mosquitto_sub(args, timeout)
+    if err:
+        return None, err
+
+    hosts = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        full_topic, state = parts
+        # Topic is <prefix>/<host>/status
+        segs = full_topic.split("/")
+        if len(segs) < 3 or segs[-1] != "status":
+            continue
+        hostname = segs[-2]
+        hosts[hostname] = state.strip()
+    return hosts, None
+
+
+def format_uptime(seconds):
+    """Format seconds as d/h/m."""
+    seconds = int(seconds)
+    if seconds < 0:
+        return "-"
+    d, s = divmod(seconds, 86400)
+    h, s = divmod(s, 3600)
+    m, _ = divmod(s, 60)
+    parts = []
+    if d:
+        parts.append(f"{d}d")
+    if h:
+        parts.append(f"{h}h")
+    parts.append(f"{m}m")
+    return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Renderers (return a list of output lines)
+# ---------------------------------------------------------------------------
+
+
+def _section(lines, title):
+    """Wrap a list of lines with a section header."""
+    out = [title]
+    for ln in lines:
+        out.append("  " + ln)
+    return out
+
+
+def render_cpu(data):
+    """Render CPU metrics."""
+    lines = []
+    freq = data.get("freq_mhz")
+    if freq is not None:
+        lines.append(f"freq:   {freq:.0f} MHz")
+    load = data.get("load_pct")
+    if load is not None:
+        lines.append(f"load:   {load * 100:.1f}%")
+    cores = data.get("per_core_pct")
+    if cores:
+        lines.append(f"cores:  {len(cores)}")
+    power = data.get("power_w")
+    if power is not None:
+        lines.append(f"power:  {power:.1f} W")
+    temp_c = data.get("temp_c", {})
+    pkg = temp_c.get("package")
+    cores_temp = temp_c.get("cores")
+    if pkg is not None:
+        lines.append(f"temp:   pkg {pkg:.0f}C" + (f" (cores {min(cores_temp):.0f}-{max(cores_temp):.0f}C)" if cores_temp else ""))
+    return lines
+
+
+def render_mem(data):
+    """Render memory metrics."""
+    total = data.get("total_bytes", 0)
+    used = data.get("used_bytes", 0)
+    avail = data.get("available_bytes", 0)
+    swap_total = data.get("swap_total_bytes", 0)
+    swap_used = data.get("swap_used_bytes", 0)
+    lines = []
+    lines.append(f"total:  {humanize_bytes(total)}")
+    if total > 0:
+        lines.append(f"used:   {humanize_bytes(used)}  ({used / total * 100:.1f}%)")
+    else:
+        lines.append(f"used:   {humanize_bytes(used)}")
+    lines.append(f"avail:  {humanize_bytes(avail)}")
+    if swap_total > 0:
+        lines.append(f"swap:   {humanize_bytes(swap_used)} / {humanize_bytes(swap_total)}")
+    return lines
+
+
+def render_gpu(data):
+    """Render GPU metrics."""
+    gpus = data.get("gpu", [])
+    if not gpus:
+        return ["no GPUs detected"]
+    blocks = []
+    for gpu in gpus:
+        b = []
+        idx = gpu.get("index", "?")
+        name = gpu.get("name", "unknown")
+        b.append(f"GPU {idx}: {name}")
+        temp = gpu.get("temp_c")
+        if temp is not None:
+            b.append(f"  temp:     {temp:.0f}C")
+        util = gpu.get("util_gpu_pct")
+        if util is not None:
+            b.append(f"  util:     {util * 100:.0f}%")
+        fan = gpu.get("fan_pct")
+        if fan is not None and fan > 0:
+            b.append(f"  fan:      {fan:.0f}%")
+        power = gpu.get("power_w")
+        limit = gpu.get("power_limit_w")
+        if power is not None:
+            if limit is not None and limit > 0:
+                b.append(f"  power:    {power:.1f} / {limit:.0f} W")
+            else:
+                b.append(f"  power:    {power:.1f} W")
+        sm = gpu.get("sm_clock_mhz")
+        if sm is not None:
+            b.append(f"  sm_clk:   {sm:.0f} MHz")
+        vram_t = gpu.get("vram_total_bytes", 0)
+        vram_u = gpu.get("vram_used_bytes", 0)
+        if vram_t > 0:
+            b.append(f"  vram:     {humanize_bytes(vram_u)} / {humanize_bytes(vram_t)}")
+        blocks.append("\n".join(b))
+    return blocks
+
+
+def render_llama(data):
+    """Render llama-server metrics (health + throughput summary)."""
+    ll = data.get("llama", {})
+    if not ll:
+        return ["llama-server not detected"]
+    up = ll.get("up", False)
+    health = ll.get("health", {})
+    lines = [f"up: {'yes' if up else 'no'}"]
+    status = health.get("status", "?")
+    lines.append(f"health: {status}")
+    throughput = ll.get("throughput", {})
+    if throughput:
+        tps = throughput.get("predicted_tps")
+        if tps is not None:
+            lines.append(f"predicted_tps: {tps:.1f}")
+        ptps = throughput.get("prompt_tps")
+        if ptps is not None:
+            lines.append(f"prompt_tps:    {ptps:.1f}")
+        busy = throughput.get("busy_slots_per_decode")
+        if busy is not None:
+            lines.append(f"busy_slots/decode: {busy:.2f}")
+        rp = throughput.get("requests_processing")
+        if rp is not None:
+            lines.append(f"requests_processing: {rp}")
+        rd = throughput.get("requests_deferred")
+        if rd is not None:
+            lines.append(f"requests_deferred:   {rd}")
+    slots = ll.get("slots", [])
+    if slots:
+        active = [s for s in slots if s.get("is_processing")]
+        lines.append(f"slots: {len(active)} active / {len(slots)} total")
+    totals = ll.get("totals", {})
+    if totals:
+        nd = totals.get("n_decode")
+        if nd:
+            lines.append(f"decoded: {int(nd):,}")
+        tp = totals.get("prompt_tokens")
+        if tp:
+            lines.append(f"prompt_tokens: {int(tp):,}")
+    proc = ll.get("proc", {})
+    if proc:
+        rss = proc.get("rss_bytes")
+        if rss:
+            lines.append(f"rss: {humanize_bytes(rss)}")
+        vram = proc.get("vram_bytes")
+        if vram:
+            lines.append(f"vram: {humanize_bytes(vram)}")
+    return lines
+
+
+def render_tokens(data):
+    """Render llama-server throughput and lifetime totals."""
+    ll = data.get("llama", {})
+    if not ll:
+        return ["llama-server not detected"]
+    throughput = ll.get("throughput", {})
+    lines = []
+    tps = throughput.get("predicted_tps")
+    if tps is not None:
+        lines.append(f"predicted_tps: {tps:.1f}")
+    ptps = throughput.get("prompt_tps")
+    if ptps is not None:
+        lines.append(f"prompt_tps:    {ptps:.1f}")
+    busy = throughput.get("busy_slots_per_decode")
+    if busy is not None:
+        lines.append(f"busy_slots_per_decode: {busy:.2f}")
+    rp = throughput.get("requests_processing")
+    if rp is not None:
+        lines.append(f"requests_processing: {rp}")
+    rd = throughput.get("requests_deferred")
+    if rd is not None:
+        lines.append(f"requests_deferred:   {rd}")
+    totals = ll.get("totals", {})
+    if totals:
+        lines.append("")
+        lines.append("Lifetime totals:")
+        nd = totals.get("n_decode")
+        if nd:
+            lines.append(f"  decoded:       {int(nd):,}")
+        tp = totals.get("prompt_tokens")
+        if tp:
+            lines.append(f"  prompt_tokens: {int(tp):,}")
+        np_ = totals.get("tokens_predicted")
+        if np_:
+            lines.append(f"  tokens_predicted: {int(np_):,}")
+        nmax = totals.get("n_tokens_max")
+        if nmax:
+            lines.append(f"  tokens_max:    {int(nmax):,}")
+    return lines
+
+
+def render_slots(data):
+    """Render per-slot details."""
+    ll = data.get("llama", {})
+    if not ll:
+        return ["llama-server not detected"]
+    slots = ll.get("slots", [])
+    if not slots:
+        return ["no slots"]
+    blocks = []
+    for s in slots:
+        b = []
+        b.append(f"Slot {s.get('id', '?')}:")
+        b.append(f"  processing:  {'yes' if s.get('is_processing') else 'no'}")
+        ctx = s.get("n_ctx")
+        if ctx is not None:
+            b.append(f"  ctx:         {ctx:,}")
+        prompt = s.get("n_prompt_tokens")
+        if prompt is not None:
+            b.append(f"  prompt:      {prompt:,}")
+        processed = s.get("n_prompt_tokens_processed")
+        if processed is not None:
+            b.append(f"  processed:   {processed:,}")
+        nt = s.get("next_token", [{}])[0] if s.get("next_token") else {}
+        if nt:
+            dec = nt.get("n_decoded")
+            if dec is not None:
+                b.append(f"  decoded:     {dec:,}")
+            rem = nt.get("n_remain")
+            if rem is not None:
+                b.append(f"  remaining:   {rem:,}")
+            b.append(f"  has_next:    {'yes' if nt.get('has_next_token') else 'no'}")
+        max_tok = s.get("params", {}).get("max_tokens")
+        if max_tok is not None:
+            b.append(f"  max_tokens:  {max_tok:,}")
+        blocks.append("\n".join(b))
+    return blocks
+
+
+def render_overview(data, host=None):
+    """Render high-level summary with CPU, memory, GPU, and llama metrics."""
+    lines = []
+
+    if host:
+        lines.append(f"host: {host}")
+    staleness = data.get("_staleness", 0)
+    ts = data.get("ts", 0)
+    ts_str = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if ts else "n/a"
+    staleness_tag = ""
+    if staleness > STALE_SECONDS:
+        staleness_tag = " [STALE]"
+    lines.append(f"snapshot: {ts_str}  (staleness: {staleness:.0f}s){staleness_tag}")
+    uptime = data.get("uptime_s")
+    if uptime is not None:
+        lines.append(f"uptime:   {format_uptime(uptime)}")
+    lines.append("")
+
+    cpu = data.get("cpu", {})
+    lines += _section(render_cpu(cpu), "CPU")
+    lines.append("")
+
+    mem = data.get("mem", {})
+    lines += _section(render_mem(mem), "Memory")
+    lines.append("")
+
+    gpus = data.get("gpu", [])
+    if gpus:
+        gpu_blocks = render_gpu(data)
+        lines.append("GPU")
+        for gb in gpu_blocks:
+            lines.append(gb)
+        lines.append("")
+
+    ll = data.get("llama", {})
+    if ll:
+        lines += _section(render_llama(data), "llama-server")
+
+    return "\n".join(lines)
+
+
+def render_raw(data, path=None):
+    """Render raw snapshot, optionally at a dotted path."""
+    if path:
+        value, found = resolve_path(data, path)
+        if not found:
+            return None, f"invalid path: {path}"
+        return str(value), None
+    return json.dumps(data, indent=2), None
+
+
+def render_hosts(hosts):
+    """Render host status table."""
+    if not hosts:
+        return ["no hosts found"]
+    lines = []
+    for host, state in sorted(hosts.items()):
+        online = state.strip().lower() == "online"
+        lines.append(f"{host:<20}  {'online' if online else state.strip()}")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def build_parser():
+    """Build and return the argparse parser with all subcommands."""
+    parser = argparse.ArgumentParser(
+        prog="resq",
+        description="Query the latest resmon MQTT snapshot (retained).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Common queries:\n"
+            "  resq                                high-level overview (default)\n"
+            "  resq tokens                         llama token rates (predicted_tps / prompt_tps)\n"
+            "  resq gpu                            GPU temp / util / VRAM / power\n"
+            "  resq llama                          llama-server health + slots summary\n"
+            "  resq raw gpu.0.temp_c               single value via dotted path\n"
+            "  resq --json overview                machine-readable overview\n"
+            "  resq hosts                          which machines are publishing\n"
+            "\nConfig via env:\n"
+            "  RESMON_MQTT_HOST, RESMON_MQTT_PORT, RESMON_CA_CERT,\n"
+            "  RESMON_MQTT_TLS_INSECURE, RESMON_MQTT_USERNAME/PASSWORD,\n"
+            "  RESMON_TOPIC_PREFIX\n"
+        ),
+    )
+
+    parser.add_argument(
+        "--from-file",
+        help="Read snapshot from a JSON file instead of MQTT (for offline testing).",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
+    sub = parser.add_subparsers(dest="command")
+
+    def add_common(p):
+        return p  # subparsers share args; --json is on root
+
+    add_common(sub.add_parser("overview", help="high-level summary"))
+    add_common(sub.add_parser("cpu", help="CPU metrics"))
+    add_common(sub.add_parser("mem", help="system memory"))
+    add_common(sub.add_parser("gpu", help="GPU metrics (one block per card)"))
+    add_common(sub.add_parser("llama", help="llama-server health + throughput summary"))
+    add_common(sub.add_parser("tokens", help="token rates + lifetime totals"))
+    add_common(sub.add_parser("slots", help="per-slot details"))
+
+    raw_p = sub.add_parser("raw", help="full snapshot or value at a dotted path")
+    raw_p.add_argument("path", nargs="?", help="dotted path (e.g. gpu.0.temp_c)")
+    add_common(raw_p)
+
+    add_common(sub.add_parser("hosts", help="list publishing hosts + online/offline"))
+
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # Default to overview when no subcommand is given
+    if args.command is None:
+        args.command = "overview"
+
+    # Load snapshot from file or broker
+    if args.from_file:
+        try:
+            with open(args.from_file) as f:
+                snapshot = json.load(f)
+        except FileNotFoundError:
+            print(f"error: file not found: {args.from_file}", file=sys.stderr)
+            return 1
+        except json.JSONDecodeError as e:
+            print(f"error: invalid JSON in {args.from_file}: {e}", file=sys.stderr)
+            return 1
+        target = None
+        err = None
+    else:
+        target = os.environ.get("RESMON_HOSTNAME")
+        prefix = os.environ.get("RESMON_TOPIC_PREFIX", DEFAULT_TOPIC_PREFIX)
+        timeout = DEFAULT_TIMEOUT_SECONDS
+        if args.command == "hosts":
+            timeout = HOSTS_TIMEOUT_SECONDS
+        snapshot, err = fetch_snapshot(target, topic_prefix=prefix, timeout=timeout)
+        if err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
+
+    # Dispatch
+    if args.command == "overview":
+        host = snapshot.get("host") if not args.from_file else None
+        if args.json:
+            result = _overview_json(snapshot)
+            print(json.dumps(result, indent=2))
+        else:
+            print(render_overview(snapshot, host=host))
+
+    elif args.command == "cpu":
+        if args.json:
+            print(json.dumps(snapshot.get("cpu", {}), indent=2))
+        else:
+            print("\n".join(render_cpu(snapshot.get("cpu", {}))))
+
+    elif args.command == "mem":
+        if args.json:
+            print(json.dumps(snapshot.get("mem", {}), indent=2))
+        else:
+            print("\n".join(render_mem(snapshot.get("mem", {}))))
+
+    elif args.command == "gpu":
+        if args.json:
+            print(json.dumps(snapshot.get("gpu", []), indent=2))
+        else:
+            print("\n".join(render_gpu(snapshot)))
+
+    elif args.command == "llama":
+        if args.json:
+            print(json.dumps(snapshot.get("llama", {}), indent=2))
+        else:
+            print("\n".join(render_llama(snapshot)))
+
+    elif args.command == "tokens":
+        if args.json:
+            print(json.dumps(_tokens_json(snapshot), indent=2))
+        else:
+            print("\n".join(render_tokens(snapshot)))
+
+    elif args.command == "slots":
+        if args.json:
+            slots = snapshot.get("llama", {}).get("slots", [])
+            # Strip heavy param block from JSON output for cleanliness
+            out = []
+            for s in slots:
+                clean = {k: v for k, v in s.items() if k != "params"}
+                out.append(clean)
+            print(json.dumps(out, indent=2))
+        else:
+            print("\n".join(render_slots(snapshot)))
+
+    elif args.command == "raw":
+        if args.json:
+            if args.path:
+                value, found = resolve_path(snapshot, args.path)
+                if not found:
+                    print(f"error: invalid path: {args.path}", file=sys.stderr)
+                    return 1
+                print(json.dumps(value, indent=2))
+            else:
+                print(json.dumps(snapshot, indent=2))
+        else:
+            text, err = render_raw(snapshot, path=args.path)
+            if err:
+                print(f"error: {err}", file=sys.stderr)
+                return 1
+            print(text)
+
+    elif args.command == "hosts":
+        if args.from_file:
+            print("error: --from-file incompatible with hosts command", file=sys.stderr)
+            return 1
+        hosts, err = fetch_status_snapshots(timeout=HOSTS_TIMEOUT_SECONDS)
+        if err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(hosts, indent=2))
+        else:
+            print("\n".join(render_hosts(hosts)))
+
+    else:
+        parser.print_help()
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# JSON helpers (for --json output)
+# ---------------------------------------------------------------------------
+
+
+def _overview_json(data):
+    """Return a flat dict suitable for --json overview."""
+    return {
+        "host": data.get("host"),
+        "ts": data.get("ts"),
+        "staleness_s": data.get("_staleness", 0),
+        "uptime_s": data.get("uptime_s"),
+        "cpu": {
+            "load_pct": data.get("cpu", {}).get("load_pct"),
+            "freq_mhz": data.get("cpu", {}).get("freq_mhz"),
+            "power_w": data.get("cpu", {}).get("power_w"),
+            "temp_package_c": data.get("cpu", {}).get("temp_c", {}).get("package"),
+        },
+        "mem": {
+            "total_bytes": data.get("mem", {}).get("total_bytes"),
+            "used_bytes": data.get("mem", {}).get("used_bytes"),
+            "available_bytes": data.get("mem", {}).get("available_bytes"),
+        },
+        "gpu": [
+            {
+                "index": g.get("index"),
+                "name": g.get("name"),
+                "temp_c": g.get("temp_c"),
+                "util_gpu_pct": g.get("util_gpu_pct"),
+                "power_w": g.get("power_w"),
+                "vram_used_bytes": g.get("vram_used_bytes"),
+                "vram_total_bytes": g.get("vram_total_bytes"),
+            }
+            for g in data.get("gpu", [])
+        ],
+        "llama": {
+            "up": data.get("llama", {}).get("up"),
+            "health_status": data.get("llama", {}).get("health", {}).get("status"),
+            "predicted_tps": (
+                data.get("llama", {}).get("throughput", {}).get("predicted_tps")
+            ),
+            "prompt_tps": (
+                data.get("llama", {}).get("throughput", {}).get("prompt_tps")
+            ),
+        },
+    }
+
+
+def _tokens_json(data):
+    """Return a dict suitable for --json tokens."""
+    ll = data.get("llama", {})
+    t = ll.get("throughput", {})
+    total = ll.get("totals", {})
+    return {
+        "predicted_tps": t.get("predicted_tps"),
+        "prompt_tps": t.get("prompt_tps"),
+        "busy_slots_per_decode": t.get("busy_slots_per_decode"),
+        "requests_processing": t.get("requests_processing"),
+        "requests_deferred": t.get("requests_deferred"),
+        "totals": {
+            "n_decode": total.get("n_decode"),
+            "prompt_tokens": total.get("prompt_tokens"),
+            "tokens_predicted": total.get("tokens_predicted"),
+            "n_tokens_max": total.get("n_tokens_max"),
+        },
+    }
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
