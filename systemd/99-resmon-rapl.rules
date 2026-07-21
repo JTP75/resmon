@@ -1,4 +1,4 @@
-# Grants the "pacel" group read access to Intel RAPL energy counters
+# Grants the "<user>" group read access to Intel RAPL energy counters
 # (/sys/class/powercap/intel-rapl:*) so resmon can read CPU package power
 # without running as root. The powercap subsystem has no /dev node, so
 # udev's OWNER/GROUP/MODE keys don't apply here -- this uses RUN+= to
@@ -14,4 +14,4 @@
 # won't touch existing nodes). Persists across reboots without any
 # further action.
 
-SUBSYSTEM=="powercap", ACTION=="add", RUN+="/bin/chgrp -R pacel /sys%p", RUN+="/bin/chmod -R g+r /sys%p"
+SUBSYSTEM=="powercap", ACTION=="add", RUN+="/bin/chgrp -R <user> /sys%p", RUN+="/bin/chmod -R g+r /sys%p"

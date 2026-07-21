@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pacel
+User=<user>
 EnvironmentFile=/etc/resmon/resmon.env
-ExecStart=/home/pacel/resmon/build/resmon
+ExecStart=/home/<user>/resmon/build/resmon
 
 Restart=on-failure
 RestartSec=5
