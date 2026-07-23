@@ -52,12 +52,46 @@ def resolve_path(data, path):
 
 
 def humanize_bytes(n):
-    """Convert bytes to a human-readable string (KiB / MiB / GiB / TiB)."""
-    for unit in ("KiB", "MiB", "GiB", "TiB"):
+    """Convert a byte count to a human-readable string (B / KiB / MiB / ...)."""
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if abs(n) < 1024.0:
             return f"{n:6.1f} {unit}"
         n /= 1024.0
     return f"{n:6.1f} PiB"
+
+
+def load_env_file(path):
+    """Load KEY=VALUE pairs from a simple env file into os.environ.
+
+    Does not override variables already set in the environment, so shell
+    exports still win over the file (CLI flags win over both). Supports
+    '#' comments (full-line or trailing) and optionally quoted values.
+    Returns an error string on failure, or None on success.
+    """
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return f"env file not found: {path}"
+    except OSError as e:
+        return f"failed to read env file: {e}"
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if (value.startswith('"') and value.endswith('"') and len(value) >= 2) or (
+            value.startswith("'") and value.endswith("'") and len(value) >= 2
+        ):
+            value = value[1:-1]
+        elif "#" in value:
+            value = value.split("#", 1)[0].strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
+    return None
 
 
 def _run_mosquitto_sub(args, timeout):
@@ -93,8 +127,12 @@ def _run_mosquitto_sub(args, timeout):
 
 
 def fetch_snapshot(target, topic_prefix=DEFAULT_TOPIC_PREFIX, timeout=DEFAULT_TIMEOUT_SECONDS):
-    """Fetch a single retained state snapshot from the broker."""
-    topic = f"{topic_prefix}/{target}/state"
+    """Fetch a single retained state snapshot from the broker.
+
+    target=None subscribes to the single-level wildcard ('+') so the one
+    publishing host is picked up automatically without RESMON_HOSTNAME set.
+    """
+    topic = f"{topic_prefix}/{target or '+'}/state"
     args = ["-h", os.environ.get("RESMON_MQTT_HOST", ""), "-p",
             str(os.environ.get("RESMON_MQTT_PORT", DEFAULT_MQTT_PORT)),
             "-t", topic]
@@ -209,7 +247,7 @@ def render_cpu(data):
         lines.append(f"freq:   {freq:.0f} MHz")
     load = data.get("load_pct")
     if load is not None:
-        lines.append(f"load:   {load * 100:.1f}%")
+        lines.append(f"load:   {load:.1f}%")
     cores = data.get("per_core_pct")
     if cores:
         lines.append(f"cores:  {len(cores)}")
@@ -259,7 +297,7 @@ def render_gpu(data):
             b.append(f"  temp:     {temp:.0f}C")
         util = gpu.get("util_gpu_pct")
         if util is not None:
-            b.append(f"  util:     {util * 100:.0f}%")
+            b.append(f"  util:     {util:.0f}%")
         fan = gpu.get("fan_pct")
         if fan is not None and fan > 0:
             b.append(f"  fan:      {fan:.0f}%")
@@ -492,7 +530,8 @@ def build_parser():
             "  resq raw gpu.0.temp_c               single value via dotted path\n"
             "  resq --json overview                machine-readable overview\n"
             "  resq hosts                          which machines are publishing\n"
-            "\nConfig via env:\n"
+            "  resq --env-file resq.env overview   load config from a file\n"
+            "\nConfig via env (or --env-file):\n"
             "  RESMON_MQTT_HOST, RESMON_MQTT_PORT, RESMON_CA_CERT,\n"
             "  RESMON_MQTT_TLS_INSECURE, RESMON_MQTT_USERNAME/PASSWORD,\n"
             "  RESMON_TOPIC_PREFIX\n"
@@ -502,6 +541,10 @@ def build_parser():
     parser.add_argument(
         "--from-file",
         help="Read snapshot from a JSON file instead of MQTT (for offline testing).",
+    )
+    parser.add_argument(
+        "--env-file",
+        help="Load RESMON_* variables from this file (shell env still takes precedence).",
     )
     parser.add_argument(
         "--json",
@@ -538,6 +581,12 @@ def main(argv=None):
     # Default to overview when no subcommand is given
     if args.command is None:
         args.command = "overview"
+
+    if args.env_file:
+        err = load_env_file(args.env_file)
+        if err:
+            print(f"error: {err}", file=sys.stderr)
+            return 1
 
     # Load snapshot from file or broker
     if args.from_file:

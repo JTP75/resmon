@@ -14,19 +14,21 @@ Lightweight CLI for querying the latest retained `resmon` MQTT snapshot. Designe
 cp resq.env.example ~/.resq.env
 $EDITOR ~/.resq.env
 
-# 2. Source it, then run
+# 2a. Point resq at it directly...
+./resq --env-file ~/.resq.env                  # high-level overview
+./resq --env-file ~/.resq.env tokens           # token rates
+
+# ...or 2b. source it into your shell instead
 source ~/.resq.env
-./resq                              # high-level overview
-./resq tokens                       # token rates
-./resq --json overview              # machine-readable
+./resq
 ```
 
-Or set `RESMON_MQTT_HOST` (and any other vars) on the command line — flags override env.
+`--env-file` only fills in variables that aren't already set in the shell, so exported env vars still win — and CLI flags win over both.
 
 ## Usage
 
 ```
-resq [--from-file PATH] [--json] [SUBCOMMAND] [ARGS]
+resq [--from-file PATH] [--env-file PATH] [--json] [SUBCOMMAND] [ARGS]
 ```
 
 **Global flags**
@@ -34,6 +36,7 @@ resq [--from-file PATH] [--json] [SUBCOMMAND] [ARGS]
 | Flag | Description |
 |---|---|
 | `--from-file PATH` | Read snapshot from a JSON file instead of MQTT (offline testing) |
+| `--env-file PATH` | Load `RESMON_*` variables from this file (shell env still takes precedence) |
 | `--json` | Emit machine-readable JSON output |
 | `-h, --help` | Show help |
 
